@@ -68,21 +68,36 @@ def patch_app_name():
 def patch_application_id():
     app_id = APPLICATION_ID or DEFAULT_APP_ID
     total = 0
+    # APP_PACKAGE в gradle.properties — источник applicationId всех app-модулей
+    # (TMessagesProj_App / _AppHuawei / _AppStandalone / _AppHockeyApp)
+    total += patch_file("gradle.properties", [
+        (r"(?m)^(APP_PACKAGE=).*$", rf"\g<1>{app_id}"),
+    ])
+
+    # Библиотека TMessagesProj: заменяем org.telegram.messenger, КРОМЕ namespace —
+    # пакет R/BuildConfig и все импорты в коде зависят от него.
+    # applicationId модулей задаётся через APP_PACKAGE, не через namespace.
+    def _keep_ns(m):
+        return m.group(0) if m.group(0).startswith("namespace") else app_id
+
     for path in (["buildVars.gradle"] + glob.glob("TMessagesProj/config/*.gradle")
                  + glob.glob("TMessagesProj/**/*.gradle", recursive=True)):
-        total += patch_file(path, [(re.escape(DEFAULT_APP_ID), app_id)])
+        total += patch_file(path, [
+            (r"namespace\s+'org\.telegram\.messenger'|org\.telegram\.messenger", _keep_ns),
+        ])
     for path in glob.glob("TMessagesProj/src/**/AndroidManifest.xml", recursive=True):
         total += patch_file(path, [
             (re.escape(DEFAULT_APP_ID + ".beta"), app_id),
         ])
-    log(f"applicationId -> {app_id} (правок: {total})")
+    log(f"applicationId -> {app_id} (правок: {total}, namespace библиотеки сохранён)")
 
 
 def patch_google_services():
     """google-services.json знает только официальные пакеты Telegram;
-    processDebugGoogleServices падает с 'No matching client found'.
-    Перезаписываем клиентов: базовый package + суффиксы .beta/.web
-    (варианты сборки TMessagesProj_App), все на одном проекте Firebase."""
+    process*GoogleServices падает с 'No matching client found'.
+    Клиенты: org.telegram.messenger (namespace библиотеки TMessagesProj —
+    он сохраняется, и плагин сверяет json с ним), новый app_id (из
+    APP_PACKAGE) и его суффиксы .beta/.web (buildTypes app-модулей)."""
     import copy
     import json
 
@@ -107,7 +122,7 @@ def patch_google_services():
                 base = c
                 break
         new_clients = []
-        for pkg in (app_id, app_id + ".beta", app_id + ".web"):
+        for pkg in (DEFAULT_APP_ID, app_id, app_id + ".beta", app_id + ".web"):
             c = copy.deepcopy(base)
             c.setdefault("client_info", {}).setdefault("android_client_info", {})["package_name"] = pkg
             new_clients.append(c)
