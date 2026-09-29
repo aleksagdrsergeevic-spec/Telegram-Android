@@ -95,6 +95,19 @@ jobs:
           import json, os, re, sys
           app_id = os.environ.get("APPLICATION_ID", "").strip() or "org.telegram.messenger"
           ok = True
+          # gradle.properties: APP_PACKAGE должен быть нашим (источник applicationId app-модулей)
+          gp = open("gradle.properties", encoding="utf-8").read()
+          m = re.search(r"(?m)^APP_PACKAGE=(.+)$", gp)
+          if not m or m.group(1).strip() != app_id:
+              print(f"FAIL: gradle.properties APP_PACKAGE={m.group(1).strip() if m else None!r}, ожидался {app_id!r}"); ok = False
+          else:
+              print(f"OK: gradle.properties APP_PACKAGE={app_id!r}")
+          # namespace библиотеки TMessagesProj должен остаться org.telegram.messenger
+          tmb = open("TMessagesProj/build.gradle", encoding="utf-8").read()
+          if "namespace 'org.telegram.messenger'" not in tmb:
+              print("FAIL: TMessagesProj/build.gradle: namespace изменён — сломается R/BuildConfig"); ok = False
+          else:
+              print("OK: TMessagesProj namespace сохранён")
           # google-services.json должен содержать client с нашим applicationId
           for p in __import__("glob").glob("TMessagesProj*/google-services.json"):
               data = json.load(open(p, encoding="utf-8"))
