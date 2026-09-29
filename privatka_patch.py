@@ -133,6 +133,21 @@ def patch_google_services():
         log(f"{path}: clients -> {app_id} (+ .beta/.web)")
     log(f"google-services.json обновлён (файлов: {patched})")
 
+    # Huawei AGConnect: плагин agcp сверяет /client/package_name с applicationId
+    # и падает 'Failed to verify AGConnect-Config'. Меняем все package_name.
+    for path in glob.glob("TMessagesProj*/agconnect-services.json"):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except Exception as e:
+            log(f"WARN: {path} не читается ({e})")
+            continue
+        n = text.count(DEFAULT_APP_ID)
+        if n:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text.replace(DEFAULT_APP_ID, app_id))
+        log(f"{path}: package_name -> {app_id} (замен: {n})")
+
 
 def patch_api_credentials():
     if not API_ID or not API_HASH:
