@@ -78,6 +78,47 @@ def patch_application_id():
     log(f"applicationId -> {app_id} (правок: {total})")
 
 
+def patch_google_services():
+    """google-services.json знает только официальные пакеты Telegram;
+    processDebugGoogleServices падает с 'No matching client found'.
+    Перезаписываем клиентов: базовый package + суффиксы .beta/.web
+    (варианты сборки TMessagesProj_App), все на одном проекте Firebase."""
+    import copy
+    import json
+
+    app_id = APPLICATION_ID or DEFAULT_APP_ID
+    if app_id == DEFAULT_APP_ID:
+        return
+    patched = 0
+    for path in glob.glob("TMessagesProj*/google-services.json"):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            log(f"WARN: {path} не читается ({e})")
+            continue
+        clients = data.get("client") or []
+        if not clients:
+            continue
+        base = clients[0]
+        for c in clients:
+            pname = c.get("client_info", {}).get("android_client_info", {}).get("package_name")
+            if pname == DEFAULT_APP_ID:
+                base = c
+                break
+        new_clients = []
+        for pkg in (app_id, app_id + ".beta", app_id + ".web"):
+            c = copy.deepcopy(base)
+            c.setdefault("client_info", {}).setdefault("android_client_info", {})["package_name"] = pkg
+            new_clients.append(c)
+        data["client"] = new_clients
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        patched += 1
+        log(f"{path}: clients -> {app_id} (+ .beta/.web)")
+    log(f"google-services.json обновлён (файлов: {patched})")
+
+
 def patch_api_credentials():
     if not API_ID or not API_HASH:
         log("API_ID/API_HASH не заданы — оставляю значения из репозитория")
@@ -263,6 +304,7 @@ def main():
     log(f"=== Privatka patcher: APP_NAME={APP_NAME!r} APPLICATION_ID={APPLICATION_ID!r} ===")
     patch_app_name()
     patch_application_id()
+    patch_google_services()
     patch_api_credentials()
     patch_icon()
     patch_server()
