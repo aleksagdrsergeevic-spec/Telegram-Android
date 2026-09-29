@@ -117,6 +117,14 @@ jobs:
                   print(f"FAIL: {p}: нет client для {app_id!r} (есть {sorted(pkgs)})"); ok = False
               else:
                   print(f"OK: {p}: client {app_id!r} на месте")
+          # agconnect-services.json (Huawei): package_name должен совпадать с applicationId
+          for p in __import__("glob").glob("TMessagesProj*/agconnect-services.json"):
+              data = json.load(open(p, encoding="utf-8"))
+              pname = (data.get("client") or {}).get("package_name")
+              if pname != app_id:
+                  print(f"FAIL: {p}: client.package_name={pname!r}, ожидался {app_id!r}"); ok = False
+              else:
+                  print(f"OK: {p}: package_name={app_id!r}")
           # Handshake.cpp должен содержать RSA PUBLIC KEY и fingerprint
           hs = None
           for cand in ("TMessagesProj/jni/tgnet/Handshake.cpp",):
@@ -145,7 +153,14 @@ jobs:
           cap(){ printf '%s' "$1" | awk '{print toupper(substr($0,1,1)) substr($0,2)}'; }
           VARIANT=${BUILD_VARIANT:-afat}
           BTYPE=${BUILD_TYPE:-debug}
-          TASK="assemble$(cap "$VARIANT")$(cap "$BTYPE")"
+          # собираем ТОЛЬКО нужный app-модуль: корневой assembleX тащит все
+          # варианты (Huawei/AGConnect, Standalone) — лишние точки отказа
+          case "$VARIANT" in
+            huawei)     MODULE=TMessagesProj_AppHuawei ;;
+            standalone) MODULE=TMessagesProj_AppStandalone ;;
+            *)          MODULE=TMessagesProj_App ;;
+          esac
+          TASK=":${MODULE}:assemble$(cap "$VARIANT")$(cap "$BTYPE")"
           echo "Gradle task: $TASK"
           ./gradlew "$TASK" --no-daemon -x lint
 
@@ -153,5 +168,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: privatka-apk
-          path: TMessagesProj/build/outputs/apk/**/*.apk
+          path: TMessagesProj*/build/outputs/apk/**/*.apk
           if-no-files-found: error
