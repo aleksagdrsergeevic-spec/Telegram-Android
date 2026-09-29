@@ -1,0 +1,107 @@
+name: Privatka APK Build
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'Название приложения'
+        required: true
+      application_id:
+        description: 'applicationId пакета'
+        required: false
+        default: ''
+      api_id:
+        description: 'Telegram API ID'
+        required: false
+        default: ''
+      api_hash:
+        description: 'Telegram API Hash'
+        required: false
+        default: ''
+      icon_url:
+        description: 'URL иконки (png)'
+        required: false
+        default: ''
+      server_ip:
+        description: 'IP сервера gramsrv'
+        required: false
+        default: ''
+      server_port:
+        description: 'Порт MTProto gramsrv'
+        required: false
+        default: '2398'
+      rsa_key_url:
+        description: 'URL публичного RSA-ключа сервера'
+        required: false
+        default: ''
+      rsa_pub:
+        description: 'PEM публичного RSA-ключа (получен с сервера после деплоя)'
+        required: false
+        default: ''
+      build_variant:
+        description: 'Вариант: afat/huawei/standalone'
+        required: false
+        default: 'afat'
+      build_type:
+        description: 'debug или release'
+        required: false
+        default: 'debug'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      APP_NAME: ${{ github.event.inputs.app_name }}
+      APPLICATION_ID: ${{ github.event.inputs.application_id }}
+      API_ID: ${{ github.event.inputs.api_id }}
+      API_HASH: ${{ github.event.inputs.api_hash }}
+      ICON_URL: ${{ github.event.inputs.icon_url }}
+      SERVER_IP: ${{ github.event.inputs.server_ip }}
+      SERVER_PORT: ${{ github.event.inputs.server_port }}
+      RSA_KEY_URL: ${{ github.event.inputs.rsa_key_url }}
+      RSA_PUB: ${{ github.event.inputs.rsa_pub }}
+      BUILD_VARIANT: ${{ github.event.inputs.build_variant }}
+      BUILD_TYPE: ${{ github.event.inputs.build_type }}
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install required NDK
+        run: |
+          NDK_VERSION=$(grep -oP 'ndkVersion\s+"\K[^"]+' build.gradle* 2>/dev/null | head -1 || true)
+          [ -n "$NDK_VERSION" ] || NDK_VERSION="27.0.12077973"
+          echo "NDK version: $NDK_VERSION"
+          ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "ndk;$NDK_VERSION" || true
+          yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+      - name: Apply privatka branding patches
+        run: python3 privatka_patch.py
+
+      - name: Build APK
+        run: |
+          chmod +x gradlew
+          cap(){ printf '%s' "$1" | awk '{print toupper(substr($0,1,1)) substr($0,2)}'; }
+          VARIANT=${BUILD_VARIANT:-afat}
+          BTYPE=${BUILD_TYPE:-debug}
+          TASK="assemble$(cap "$VARIANT")$(cap "$BTYPE")"
+          echo "Gradle task: $TASK"
+          ./gradlew "$TASK" --no-daemon -x lint
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: privatka-apk
+          path: TMessagesProj/build/outputs/apk/**/*.apk
+          if-no-files-found: error
