@@ -89,6 +89,43 @@ jobs:
       - name: Apply privatka branding patches
         run: python3 privatka_patch.py
 
+      - name: Validate patched config
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, re, sys
+          app_id = os.environ.get("APPLICATION_ID", "").strip() or "org.telegram.messenger"
+          ok = True
+          # google-services.json должен содержать client с нашим applicationId
+          for p in __import__("glob").glob("TMessagesProj*/google-services.json"):
+              data = json.load(open(p, encoding="utf-8"))
+              pkgs = {c.get("client_info", {}).get("android_client_info", {}).get("package_name")
+                      for c in data.get("client", [])}
+              if app_id not in pkgs:
+                  print(f"FAIL: {p}: нет client для {app_id!r} (есть {sorted(pkgs)})"); ok = False
+              else:
+                  print(f"OK: {p}: client {app_id!r} на месте")
+          # Handshake.cpp должен содержать RSA PUBLIC KEY и fingerprint
+          hs = None
+          for cand in ("TMessagesProj/jni/tgnet/Handshake.cpp",):
+              if os.path.exists(cand): hs = cand
+          if hs:
+              t = open(hs, encoding="utf-8", errors="replace").read()
+              if "BEGIN RSA PUBLIC KEY" not in t:
+                  print(f"FAIL: {hs}: нет RSA-ключа"); ok = False
+              else:
+                  print(f"OK: {hs}: RSA-ключ вшит")
+          # endpoint: в tgnet не должно остаться адресов Telegram
+          cm = "TMessagesProj/jni/tgnet/Connections.cpp"
+          if os.path.exists(cm):
+              t = open(cm, encoding="utf-8", errors="replace").read()
+              leftover = [p for p in ("149.154.", "91.108.", "95.161.") if p in t]
+              if leftover:
+                  print(f"FAIL: {cm}: остались адреса Telegram: {leftover}"); ok = False
+              else:
+                  print(f"OK: {cm}: адреса Telegram заменены")
+          sys.exit(0 if ok else 1)
+          PYEOF
+
       - name: Build APK
         run: |
           chmod +x gradlew
