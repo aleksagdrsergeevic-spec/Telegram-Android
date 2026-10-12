@@ -57,12 +57,89 @@ def patch_app_name():
             (r'(<string name="AppNameBeta">)[^<]*(</string>)', rf"\1{APP_NAME}\2"),
             (r'(<string name="AppFolderName">)[^<]*(</string>)', rf"\1{APP_NAME}\2"),
         ])
-    # label в AndroidManifest
+    # label в AndroidManifest. Раньше тут была ошибка: (android:label=")[^"]*(/>)
+    # не совпадало НИКОГДА — после [^"]* оставалась закрывающая кавычка, которую
+    # (/>) не покрывал. Поэтому под иконкой приложения всегда было "Telegram".
+    # Ссылки вида @string/AppName не трогаем — это ресурс, а не имя.
+    def _label(m):
+        value = m.group(2)
+        if not value.strip() or value.startswith("@"):
+            return m.group(0)
+        return m.group(1) + APP_NAME + m.group(3)
+
     for path in glob.glob("TMessagesProj/src/**/AndroidManifest.xml", recursive=True):
         total += patch_file(path, [
-            (r'(android:label=")[^"]*(/>)', rf"\g<1>{APP_NAME}\g<2>"),
+            (r'(android:label=")([^"]*)(")', _label),
         ])
     log(f"AppName -> \"{APP_NAME}\" (правок: {total})")
+
+
+# Значения, похожие на текст, но технические — их заменять нельзя: ссылки,
+# пакеты, ресурсы, интенты. Иначе приложение упадёт или собьёт навигацию.
+_TECH_VALUE = re.compile(
+    r"(://|market:|content:|android\.|org\.telegram|\.messenger|t\.me|"
+    r"@string/|@null|\?attr|\.com\b|\.org\b|\.net\b|\.ru\b|intent:)", re.I)
+
+# <string name="KEY">VALUE</string> и <item quantity="one">VALUE</item>.
+# Атрибут name трогать нельзя: на ключи ссылается R.string.KEY в коде.
+_EL_WITH_TEXT = re.compile(
+    r"(<string\b[^>]*>|<item\b[^>]*>)([^<]*)(</string>|</item>)")
+
+
+def _brand_value(value, name):
+    """Заменяет слово Telegram в текстовом значении ресурса.
+    None — значение трогать нельзя (техническое или без слова Telegram)."""
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if "telegram" not in text.lower():
+        return None
+    # одиночное «Telegram» — это имя приложения, заменяем;
+    # всё, что похоже на ссылку/пакет/ресурс, оставляем как есть
+    if text.lower() != "telegram" and _TECH_VALUE.search(value):
+        return None
+    repl = name.replace("\\", "\\\\")
+    new = re.sub(r"\bTelegram\b", repl, value)
+    new = re.sub(r"\bTELEGRAM\b", repl.upper(), new)
+    new = re.sub(r"\btelegram\b", repl.lower(), new)
+    return None if new == value else new
+
+
+def patch_full_rebrand():
+    """Заменяет слово «Telegram» на ваше название во всех пользовательских строках.
+
+    Меняется ТОЛЬКО текст внутри <string>/<item> — имена ресурсов остаются
+    прежними, иначе сломаются все ссылки R.string.* в коде. Технические
+    значения (URL, пакеты, ресурсы, интенты) не трогаются."""
+    if not APP_NAME:
+        return
+    paths = sorted(set(
+        glob.glob("TMessagesProj/src/**/res/values*/strings.xml", recursive=True)))
+    total = 0
+    files = 0
+
+    def _replace(m):
+        new = _brand_value(m.group(2), APP_NAME)
+        if new is None:
+            return m.group(0)
+        return m.group(1) + new + m.group(3)
+
+    for path in paths:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        new_text, n = _EL_WITH_TEXT.subn(_replace, text)
+        if n and new_text != text:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(new_text)
+            total += n
+            files += 1
+    if total:
+        log(f"Полный ребрендинг: Telegram -> \"{APP_NAME}\" "
+            f"(строк: {total} в {files} файлах)")
+    else:
+        log("Полный ребрендинг: подходящих строк не найдено")
 
 
 def patch_application_id():
@@ -333,6 +410,7 @@ def patch_rsa():
 def main():
     log(f"=== Privatka patcher: APP_NAME={APP_NAME!r} APPLICATION_ID={APPLICATION_ID!r} ===")
     patch_app_name()
+    patch_full_rebrand()
     patch_application_id()
     patch_google_services()
     patch_api_credentials()
