@@ -228,7 +228,12 @@ def patch_google_services():
 
 def patch_api_credentials():
     if not API_ID or not API_HASH:
-        log("API_ID/API_HASH не заданы — оставляю значения из репозитория")
+        # Сервер app_id не проверяет, поэтому сборка не падает: остаются
+        # официальные ключи Telegram из репозитория (APP_ID=4). Это работает,
+        # но идентификатор чужой — предупреждаем и продолжаем.
+        log("ВНИМАНИЕ: API_ID/API_HASH не заданы — останутся официальные ключи "
+            "Telegram (APP_ID=4). Сборка продолжится, но лучше указать свои "
+            "ключи с my.telegram.org.")
         return
     total = 0
     for path in glob.glob("TMessagesProj/config/*.gradle"):
