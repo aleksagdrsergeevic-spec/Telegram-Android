@@ -80,7 +80,7 @@ jobs:
 
       - name: Install required NDK
         run: |
-          NDK_VERSION=$(grep -oP 'ndkVersion\s+"\K[^"]+' build.gradle* 2>/dev/null | head -1 || true)
+          NDK_VERSION=$(grep -rhoP 'ndkVersion\s+"\K[^"]+' --include='build.gradle*' . 2>/dev/null | head -1 || true)
           [ -n "$NDK_VERSION" ] || NDK_VERSION="27.0.12077973"
           echo "NDK version: $NDK_VERSION"
           ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "ndk;$NDK_VERSION" || true
@@ -144,6 +144,17 @@ jobs:
                   print(f"FAIL: {cm}: остались адреса Telegram: {leftover}"); ok = False
               else:
                   print(f"OK: {cm}: адреса Telegram заменены")
+          # форк MyTelegram: адрес DC задан в ConnectionsManager.cpp (initDatacenters)
+          cmm = "TMessagesProj/jni/tgnet/ConnectionsManager.cpp"
+          if os.path.exists(cmm):
+              t = open(cmm, encoding="utf-8", errors="replace").read()
+              srv = os.environ.get("SERVER_IP", "").strip()
+              if "192.168.1.100" in t:
+                  print("FAIL: ConnectionsManager.cpp: остался адрес 192.168.1.100"); ok = False
+              elif srv and srv in t:
+                  print(f"OK: ConnectionsManager.cpp: адрес DC заменён на {srv}")
+              else:
+                  print("WARN: ConnectionsManager.cpp: адрес сервера не найден")
           sys.exit(0 if ok else 1)
           PYEOF
 
