@@ -45,6 +45,14 @@ on:
         description: 'debug или release'
         required: false
         default: 'release'
+      source_repo:
+        description: 'Репозиторий-источник APK (owner/repo)'
+        required: false
+        default: ''
+      source_ref:
+        description: 'Ветка/тег источника APK'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -66,10 +74,9 @@ jobs:
       BUILD_VARIANT: ${{ github.event.inputs.build_variant }}
       BUILD_TYPE: ${{ github.event.inputs.build_type }}
     steps:
-      - name: Checkout with submodules
+      - name: Checkout workflow host (workflow + patcher)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 1
 
       - name: Setup JDK 17
@@ -78,7 +85,16 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Clone source repository
+        env:
+          SOURCE_REPO: ${{ github.event.inputs.source_repo || github.repository }}
+          SOURCE_REF: ${{ github.event.inputs.source_ref || github.ref_name }}
+        run: |
+          echo "Источник APK: $SOURCE_REPO ($SOURCE_REF)"
+          git clone --depth 1 --branch "$SOURCE_REF"             --recurse-submodules --shallow-submodules             "https://github.com/${SOURCE_REPO}.git" src
+
       - name: Install required NDK
+        working-directory: src
         run: |
           NDK_VERSION=$(grep -rhoP 'ndkVersion\s+"\K[^"]+' --include='build.gradle*' . 2>/dev/null | head -1 || true)
           [ -n "$NDK_VERSION" ] || NDK_VERSION="27.0.12077973"
@@ -87,9 +103,11 @@ jobs:
           yes | ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
       - name: Apply privatka branding patches
-        run: python3 privatka_patch.py
+        working-directory: src
+        run: python3 ../privatka_patch.py
 
       - name: Validate patched config
+        working-directory: src
         run: |
           python3 - <<'PYEOF'
           import json, os, re, sys
@@ -159,6 +177,7 @@ jobs:
           PYEOF
 
       - name: Build APK
+        working-directory: src
         run: |
           chmod +x gradlew
           cap(){ printf '%s' "$1" | awk '{print toupper(substr($0,1,1)) substr($0,2)}'; }
@@ -179,5 +198,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: privatka-apk
-          path: TMessagesProj*/build/outputs/apk/**/*.apk
+          path: src/TMessagesProj*/build/outputs/apk/**/*.apk
           if-no-files-found: error
