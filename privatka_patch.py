@@ -249,6 +249,15 @@ def patch_api_credentials():
             (r'(appId\s+)\d+', rf"\g<1>{API_ID}"),
             (r'(appHash\s+")[^"]*(")', rf"\g<1>{API_HASH}\g<2>"),
         ])
+    # BuildVars.java — современные форки (в т.ч. loyldg/mytelegram-android) держат
+    # ключи в Java, а не в gradle:
+    #   public static int APP_ID = 4;
+    #   public static String APP_HASH = "...";
+    for path in glob.glob("TMessagesProj/src/**/BuildVars.java", recursive=True):
+        total += patch_file(path, [
+            (r'(APP_ID\s*=\s*)\d+', rf"\g<1>{API_ID}"),
+            (r'(APP_HASH\s*=\s*")[^"]*(")', rf"\g<1>{API_HASH}\g<2>"),
+        ])
     log(f"API_ID/API_HASH вшиты (правок: {total})")
 
 
@@ -284,8 +293,16 @@ def patch_icon():
 
 
 def patch_server():
-    """Точка gramsrv: в нативном tgnet (initDatacenters) все адреса DC
-    заменяются на IP сервера, IPv6 Телеграма удаляется, порт 443 -> порт gramsrv."""
+    """Точка сервера: вшивает IP и порт вашего DC вместо адресов Telegram.
+
+    Поддерживаются оба формата форков Telegram-Android:
+    1) Стоковый (TelegramOrg/Telegram-Android): адреса DC (149.154.*, 91.108.*,
+       95.161.*) лежат в tgnet (Connections.cpp и др.). Меняем их на IP сервера,
+       IPv6 Телеграма убираем, порт 443 -> порт MTProto gramsrv.
+    2) Форк MyTelegram (loyldg/mytelegram-android): адрес DC задан строкой
+       '192.168.1.100', а порт — в initDatacenters()
+       (TMessagesProj/jni/tgnet/ConnectionsManager.cpp): port=20443. Меняем
+       строку адреса и порты 20443/20543/20643/20644 на IP и порт сервера."""
     if not SERVER_IP:
         return
     # По умолчанию — внешний порт (его публикует проброс на VPS). Внутренний
@@ -305,12 +322,16 @@ def patch_server():
             (r'\n[^\n]*addAddressAndPort\("2001:[0-9a-fA-F:]+",[^\n]*\);', ""),
             # после замены IP: порт 443 -> порт MTProto gramsrv
             (rf'(addAddressAndPort\("{ip}",\s*)443', rf"\g<1>{port}"),
+            # форк MyTelegram: адрес DC строкой и порт в initDatacenters()
+            (r'"192\.168\.1\.100"', f'"{SERVER_IP}"'),
+            (r'(\bport2?\s*=\s*)(?:20443|20543|20643|20644)\b', rf"\g<1>{port}"),
         ])
     cm = "TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java"
     total += patch_file(cm, [
         (r'(")149\.154\.[0-9.]+(")', rf"\g<1>{SERVER_IP}\g<2>"),
         (r'(")91\.108\.[0-9.]+(")', rf"\g<1>{SERVER_IP}\g<2>"),
         (r'(")95\.161\.[0-9.]+(")', rf"\g<1>{SERVER_IP}\g<2>"),
+        (r'"192\.168\.1\.100"', f'"{SERVER_IP}"'),
     ])
     log(f"Адреса DC -> {SERVER_IP}:{port} (правок: {total})")
 
