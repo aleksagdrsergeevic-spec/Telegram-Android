@@ -17,7 +17,7 @@ API_ID = os.environ.get("API_ID", "").strip()
 API_HASH = os.environ.get("API_HASH", "").strip()
 ICON_URL = os.environ.get("ICON_URL", "").strip()
 SERVER_IP = os.environ.get("SERVER_IP", "").strip()
-SERVER_PORT = os.environ.get("SERVER_PORT", "2398").strip()
+SERVER_PORT = os.environ.get("SERVER_PORT", "443").strip()
 RSA_KEY_URL = os.environ.get("RSA_KEY_URL", "").strip()
 RSA_PUB = os.environ.get("RSA_PUB", "").strip()
 
@@ -288,7 +288,9 @@ def patch_server():
     заменяются на IP сервера, IPv6 Телеграма удаляется, порт 443 -> порт gramsrv."""
     if not SERVER_IP:
         return
-    port = SERVER_PORT or "2398"
+    # По умолчанию — внешний порт (его публикует проброс на VPS). Внутренний
+    # порт контейнера (2398) незачем вшивать в клиент: с ним APK не подключится.
+    port = SERVER_PORT or "443"
     ip = re.escape(SERVER_IP)
     total = 0
     tgnet_files = (glob.glob("tgnet/*.cpp") + glob.glob("tgnet/*.h")
