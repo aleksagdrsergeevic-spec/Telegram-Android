@@ -28,7 +28,7 @@ on:
       server_port:
         description: 'Порт MTProto gramsrv'
         required: false
-        default: '2398'
+        default: '443'
       rsa_key_url:
         description: 'URL публичного RSA-ключа сервера'
         required: false
@@ -44,7 +44,7 @@ on:
       build_type:
         description: 'debug или release'
         required: false
-        default: 'debug'
+        default: 'release'
 
 permissions:
   contents: read
@@ -152,7 +152,7 @@ jobs:
           chmod +x gradlew
           cap(){ printf '%s' "$1" | awk '{print toupper(substr($0,1,1)) substr($0,2)}'; }
           VARIANT=${BUILD_VARIANT:-afat}
-          BTYPE=${BUILD_TYPE:-debug}
+          BTYPE=${BUILD_TYPE:-release}
           # собираем ТОЛЬКО нужный app-модуль: корневой assembleX тащит все
           # варианты (Huawei/AGConnect, Standalone) — лишние точки отказа
           case "$VARIANT" in
