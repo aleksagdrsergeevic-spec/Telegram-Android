@@ -416,23 +416,75 @@ def patch_rsa():
     lit = '\"' + '\\n"\n                    \"'.join(lines) + '\"'
     fp_lit = f"{fp & 0xffffffffffffffff:#018x}"
 
+    # 1) встроенный PEM-ключ: header ... "-----END RSA PUBLIC KEY-----".
+    #    В стоковом tgnet таких блоков ДВА (ветки testBackend: test и prod) и
+    #    release-сборка берёт prod-слот, поэтому подменять надо ВСЕ блоки, иначе
+    #    клиент сопоставит наш fingerprint с чужим ключом и зациклит req_pq.
+    #    Замена — callable, чтобы re.sub не интерпретировал backslash-эскейпы C-литерала.
+    pem_re = (r'\"-----BEGIN RSA PUBLIC KEY-----\\n\"'
+              r'[\s\S]*?\"-----END RSA PUBLIC KEY-----\"')
+    # 2) fingerprint ключа сервера (0xb25898df208d2603 test / 0xd09d1d85de64fd85 prod)
+    fp_re = r'push_back\(0x[0-9a-fA-F]+\)'
+    tgnet = sorted(set(glob.glob("tgnet/*.cpp") + glob.glob("tgnet/*.h")
+                       + glob.glob("TMessagesProj/jni/tgnet/*.cpp")
+                       + glob.glob("TMessagesProj/jni/tgnet/*.h")))
+    want_fp = "push_back(" + fp_lit + ")"
+    our_line = lines[1] if len(lines) > 1 else ""
     total = 0
-    hs_files = (glob.glob("tgnet/Handshake.cpp")
-                + glob.glob("TMessagesProj/jni/tgnet/Handshake.cpp"))
-    for path in hs_files:
-        total += patch_file(path, [
-            # 1) встроенный PEM-ключ (test и prod): header ... "-----END RSA PUBLIC KEY-----"
-            # замена — callable, чтобы re.sub не интерпретировал backslash-эскейпы C-литерала
-            (r'\"-----BEGIN RSA PUBLIC KEY-----\\n\"[\s\S]*?\"-----END RSA PUBLIC KEY-----\"',
-             lambda m: lit),
-            # 2) его fingerprint (0xb25898df208d2603 test / 0xd09d1d85de64fd85 prod)
-            (r'push_back\(0x[0-9a-fA-F]+\)', f"push_back({fp_lit})"),
-        ])
+    done = []
+    for path in tgnet:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        # ключ/fingerprint меняем только там, где они реально вшиты — чужие
+        # push_back(0x...) в других файлах не трогаем
+        do_key = "BEGIN RSA PUBLIC KEY" in text
+        do_fp = do_key or "serverPublicKeysFingerprints" in text
+        done.append((path, do_key, do_fp))
+        subs = []
+        if do_key:
+            subs.append((pem_re, lambda m: lit))
+        if do_fp:
+            subs.append((fp_re, want_fp))
+        if subs:
+            total += patch_file(path, subs)
     if total == 0:
-        log("ERROR: Handshake.cpp не найден или структура ключей изменилась — "
-            "клиент не сможет доверять вашему DC; сборка остановлена")
+        log("ERROR: встроенный RSA-ключ не найден в tgnet — структура исходников "
+            "изменилась, клиент не сможет доверять вашему DC; сборка остановлена")
         sys.exit(1)
-    log(f"Патч RSA завершён: ключ и fingerprint вшиты в Handshake.cpp (правок: {total})")
+    # Строгая проверка: не осталось ни одного чужого ключа или fingerprint.
+    # Иначе APK молча уйдёт в бесконечный цикл req_pq на живом сервере.
+    problems = []
+    for path, do_key, do_fp in done:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        if do_key and our_line:
+            n_markers = text.count("-----BEGIN RSA PUBLIC KEY-----")
+            n_ours = sum(1 for m in re.finditer(pem_re, text) if our_line in m.group(0))
+            if n_ours != n_markers:
+                problems.append(f"{path}: не все встроенные ключи заменены "
+                                f"({n_ours} из {n_markers})")
+            for m in re.finditer(pem_re, text):
+                if our_line not in m.group(0):
+                    problems.append(f"{path}: остался чужой RSA-ключ")
+                    break
+        if do_fp:
+            for m in re.finditer(fp_re, text):
+                if m.group(0) != want_fp:
+                    problems.append(f"{path}: остался чужой fingerprint {m.group(0)}")
+                    break
+    if problems:
+        for item in problems:
+            log("ERROR: " + item)
+        log("ERROR: клиент может доверять чужому ключу — сборка остановлена")
+        sys.exit(1)
+    log(f"Патч RSA завершён: ключ {fp_lit} вшит во все tgnet-исходники "
+        f"(файлов: {len(tgnet)}, правок: {total})")
 
 
 def main():
