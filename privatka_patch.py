@@ -2,7 +2,7 @@
 """Privatka patcher: вшивает все пользовательские названия в Telegram-Android.
 
 Читает переменные окружения из workflow: APP_NAME, APPLICATION_ID, API_ID,
-API_HASH, ICON_URL, SERVER_IP, RSA_KEY_URL.
+API_HASH, ICON_URL, SERVER_IP, RSA_KEY_URL, PROXY_LIST.
 Каждый шаг логируется; отсутствие опционального значения пропускает шаг.
 """
 import glob
@@ -20,6 +20,146 @@ SERVER_IP = os.environ.get("SERVER_IP", "").strip()
 SERVER_PORT = os.environ.get("SERVER_PORT", "443").strip()
 RSA_KEY_URL = os.environ.get("RSA_KEY_URL", "").strip()
 RSA_PUB = os.environ.get("RSA_PUB", "").strip()
+# SOCKS5-прокси для приложения: строки host:port:user:pass через ";".
+# Нужны, чтобы приложение работало без VPN (провайдеры режут адрес сервера).
+PROXY_LIST = os.environ.get("PROXY_LIST", "").strip()
+
+JAVA_DIR = "TMessagesProj/src/main/java/org/telegram/messenger"
+BROWSER_PATH = JAVA_DIR + "/browser/Browser.java"
+APP_LOADER_PATH = JAVA_DIR + "/ApplicationLoader.java"
+MESSAGES_PATH = JAVA_DIR + "/MessagesController.java"
+PROXY_CLASS_PATH = JAVA_DIR + "/PrivatkaProxy.java"
+
+# Класс, который включает вшитый прокси при первом запуске. Файл создаётся
+# здесь, в исходниках его нет. Ротация прокси в этом форке уже есть: клиент
+# сам переключается на доступный адрес, поэтому адресов может быть несколько.
+PROXY_JAVA = """package org.telegram.messenger;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+
+import org.telegram.utils.proxy.ProxySettings;
+
+import java.util.ArrayList;
+
+/**
+ * Прокси, вшитые в сборку: приложение работает без VPN.
+ *
+ * Провайдеры часто режут адрес сервера целиком, и без прокси клиент не
+ * подключается. tgnet умеет SOCKS5: он просит прокси открыть TCP до адреса
+ * датацентра, а прокси просто перекладывает поток. Адреса задаёт сборка,
+ * клиент сам переключается на доступный (ротация прокси в настройках).
+ *
+ * Файл создаётся патчером Privatka — править его в исходниках не нужно.
+ */
+public final class PrivatkaProxy {
+
+    /** Меняется вместе со списком: новая сборка применяет прокси заново. */
+    private static final String VERSION = "__VERSION__";
+
+    private static final String[] PROXIES = {
+__PROXIES__
+    };
+
+    private static final String APPLIED = "privatka_proxy_version";
+
+    private PrivatkaProxy() {
+    }
+
+    public static void apply() {
+        if (PROXIES.length == 0 || VERSION.length() == 0) {
+            return;
+        }
+        try {
+            Context context = ApplicationLoader.applicationContext;
+            if (context == null) {
+                return;
+            }
+            SharedPreferences preferences = context.getSharedPreferences("mainconfig", Context.MODE_PRIVATE);
+            if (VERSION.equals(preferences.getString(APPLIED, ""))) {
+                // В этой сборке прокси уже включён: дальше решает пользователь.
+                return;
+            }
+            SharedConfig.loadProxyList();
+            ArrayList<SharedConfig.ProxyInfo> added = new ArrayList<>();
+            for (int a = 0; a < PROXIES.length; a++) {
+                SharedConfig.ProxyInfo info = parse(PROXIES[a]);
+                if (info != null) {
+                    added.add(SharedConfig.addProxy(info));
+                }
+            }
+            if (added.isEmpty()) {
+                return;
+            }
+            SharedConfig.proxyRotationEnabled = true;
+            if (SharedConfig.currentProxy == null) {
+                SharedConfig.currentProxy = added.get(0);
+            }
+            SharedPreferences.Editor editor = preferences.edit();
+            editor.putBoolean("proxy_enabled", true);
+            editor.putString(APPLIED, VERSION);
+            SharedConfig.currentProxy.settings.toSharedPreferences(editor);
+            editor.apply();
+            // ротация читается из userconfing — включаем её и там
+            context.getSharedPreferences("userconfing", Context.MODE_PRIVATE)
+                    .edit().putBoolean("proxyRotationEnabled", true).apply();
+            FileLog.d("PrivatkaProxy: прокси включён, адресов " + added.size());
+        } catch (Throwable ignore) {
+        }
+    }
+
+    private static SharedConfig.ProxyInfo parse(String row) {
+        try {
+            int first = row.indexOf(':');
+            int second = first < 0 ? -1 : row.indexOf(':', first + 1);
+            int third = second < 0 ? -1 : row.indexOf(':', second + 1);
+            if (third < 0) {
+                return null;
+            }
+            ProxySettings settings = ProxySettings.builder()
+                    .setType(ProxySettings.Type.SOCKS5)
+                    .setAddress(row.substring(0, first))
+                    .setPort(Integer.parseInt(row.substring(first + 1, second)))
+                    .setUser(row.substring(second + 1, third))
+                    .setPassword(row.substring(third + 1))
+                    .build();
+            if (!settings.isValid()) {
+                return null;
+            }
+            return new SharedConfig.ProxyInfo(settings);
+        } catch (Throwable ignore) {
+            return null;
+        }
+    }
+}
+"""
+
+# Ссылки t.me открываются внутри приложения. Так же ведёт себя штатный
+# Telegram: но если сервер отдаёт свой префикс ссылок, t.me перестаёт считаться
+# внутренним — и подарки/каналы уезжают в браузер. Поэтому префикс фиксируем.
+TME_BLOCK = """        // Privatka: ссылки t.me (включая подарки и звёздные подарки) открываются
+        // внутри приложения, а не во внешнем браузере. Исключения — только те
+        // адреса, которые приложение не умеет показывать само.
+        if ("t.me".equals(host) || "telegram.me".equals(host) || "telegram.dog".equals(host)) {
+            String privatkaPath = uri.getPath();
+            privatkaPath = privatkaPath == null ? "" : privatkaPath.toLowerCase();
+            if (!privatkaPath.startsWith("/iv") && !privatkaPath.startsWith("/s/")) {
+                return true;
+            }
+        }
+"""
+
+HOST_ANCHOR = """        String host = AndroidUtilities.getHostAuthority(uri);
+        host = host != null ? host.toLowerCase() : "";
+"""
+
+LINK_PREFIX_OLD = """        linkPrefix = mainPreferences.getString("linkPrefix", "t.me");"""
+LINK_PREFIX_NEW = """        // Privatka: префикс ссылок всегда t.me — тогда любые ссылки на каналы и
+        // подарки разбираются внутри приложения. Серверный префикс игнорируем.
+        linkPrefix = "t.me";"""
+
+APPLY_CALL = """        PrivatkaProxy.apply();
+"""
 
 DEFAULT_APP_ID = "org.telegram.messenger"
 
@@ -441,7 +581,9 @@ def patch_rsa():
         # ключ/fingerprint меняем только там, где они реально вшиты — чужие
         # push_back(0x...) в других файлах не трогаем
         do_key = "BEGIN RSA PUBLIC KEY" in text
-        do_fp = do_key or "serverPublicKeysFingerprints" in text
+        # fingerprint — только там, где реально лежит вектор serverPublicKeysFingerprints:
+        # иначе push_back(0x...) чужого назначения получил бы наш fingerprint
+        do_fp = "serverPublicKeysFingerprints" in text
         done.append((path, do_key, do_fp))
         subs = []
         if do_key:
@@ -487,6 +629,93 @@ def patch_rsa():
         f"(файлов: {len(tgnet)}, правок: {total})")
 
 
+def _save(path, text):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def insert_after(path, anchor, addition, label):
+    """Вставляет текст сразу после якоря обычной строкой: точки и скобки в
+    якорях не приходится экранировать, в отличие от регулярных выражений."""
+    if not os.path.exists(path):
+        log("WARN: " + label + ": не найден " + path)
+        return False
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    if addition.strip().splitlines()[0] in text:
+        log(label + ": уже вшито")
+        return True
+    if anchor not in text:
+        log("WARN: " + label + ": не нашёл место вставки в " + path)
+        return False
+    _save(path, text.replace(anchor, anchor + addition, 1))
+    log(label + ": готово")
+    return True
+
+
+def insert_before(path, anchor, addition, label):
+    if not os.path.exists(path):
+        log("WARN: " + label + ": не найден " + path)
+        return False
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    if addition.strip() in text:
+        log(label + ": уже вшито")
+        return True
+    if anchor not in text:
+        log("WARN: " + label + ": не нашёл место вставки в " + path)
+        return False
+    _save(path, text.replace(anchor, addition + anchor, 1))
+    log(label + ": готово")
+    return True
+
+
+def patch_internal_links():
+    """Ссылки t.me открываются внутри приложения, а не в браузере."""
+    insert_after(BROWSER_PATH, HOST_ANCHOR, TME_BLOCK, "Ссылки t.me")
+    if not os.path.exists(MESSAGES_PATH):
+        log("WARN: не найден MessagesController.java")
+        return
+    with open(MESSAGES_PATH, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    if LINK_PREFIX_OLD in text:
+        _save(MESSAGES_PATH, text.replace(LINK_PREFIX_OLD, LINK_PREFIX_NEW, 1))
+        log("Префикс ссылок: t.me")
+    elif LINK_PREFIX_NEW.strip() in text:
+        log("Префикс ссылок: уже t.me")
+    else:
+        log("WARN: не нашёл присвоение linkPrefix — префикс ссылок не изменён")
+
+
+def patch_proxy():
+    """Вшивает SOCKS5-прокси: приложение работает без VPN."""
+    allowed = set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.:-_")
+    rows = []
+    for item in PROXY_LIST.split(";"):
+        row = item.strip()
+        if not row or row.count(":") < 3:
+            continue
+        if not all(ch in allowed for ch in row):
+            log("WARN: пропускаю прокси со странными символами")
+            continue
+        rows.append(row)
+    version = ""
+    if rows:
+        import hashlib
+        version = hashlib.sha1(";".join(rows).encode("utf-8")).hexdigest()[:12]
+    entries = "\n".join("        " + '"' + row + '",' for row in rows)
+    if not os.path.isdir(JAVA_DIR):
+        log("WARN: не нашёл java-исходники — прокси не вшит")
+        return
+    _save(PROXY_CLASS_PATH, PROXY_JAVA.replace("__VERSION__", version).replace("__PROXIES__", entries))
+    insert_before(APP_LOADER_PATH, "        ProxyRotationController.init();",
+                  APPLY_CALL, "Прокси при старте приложения")
+    if rows:
+        log("Прокси вшит в сборку: адресов " + str(len(rows)))
+    else:
+        log("Прокси не заданы — сборка без прокси (адрес появится после деплоя)")
+
+
 def main():
     log(f"=== Privatka patcher: APP_NAME={APP_NAME!r} APPLICATION_ID={APPLICATION_ID!r} ===")
     patch_app_name()
@@ -497,6 +726,8 @@ def main():
     patch_icon()
     patch_server()
     patch_rsa()
+    patch_proxy()
+    patch_internal_links()
     log("Готово")
 
 
