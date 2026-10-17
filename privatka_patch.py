@@ -158,8 +158,29 @@ LINK_PREFIX_NEW = """        // Privatka: префикс ссылок всегд
         // подарки разбираются внутри приложения. Серверный префикс игнорируем.
         linkPrefix = "t.me";"""
 
+CONFIG_PREFIX_OLD = """            linkPrefix = config.me_url_prefix;"""
+CONFIG_PREFIX_NEW = """            // Privatka: сервер присылает свой префикс ссылок — не берём его.
+            // Иначе ссылки строятся на чужой домен и уезжают в браузер.
+            linkPrefix = "t.me";"""
+
 APPLY_CALL = """        PrivatkaProxy.apply();
 """
+
+# Название приложения в шапке списка чатов (org.telegram.ui.DialogsActivity) и
+# на вводном экране (org.telegram.ui.IntroActivity) рисуется картинкой: на
+# строку с названием натягивается ImageSpan с логотипом-надписью Telegram,
+# поэтому замена имени в ресурсах на экране не видна — видно надпись Telegram.
+# Убираем подстановку картинки, тогда остаётся текст, то есть имя из панели.
+HEADER_LOGO_SPAN = ("ssb.setSpan(new ImageSpan(logoDrawable), 0, ssb.length(), "
+                    "Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);")
+
+# Где эта картинка подменяет название (пути проверены по loyldg/mytelegram-android@master;
+# последний — запас на раскладку стокового форка Telegram).
+WORDMARK_FILES = (
+    "TMessagesProj/src/main/java/org/telegram/ui/DialogsActivity.java",
+    "TMessagesProj/src/main/java/org/telegram/ui/IntroActivity.java",
+    JAVA_DIR + "/DialogsActivity.java",
+)
 
 DEFAULT_APP_ID = "org.telegram.messenger"
 
@@ -670,6 +691,30 @@ def insert_before(path, anchor, addition, label):
     return True
 
 
+def patch_wordmarks():
+    """В шапке чатов и на вводном экране видно наше название, а не логотип Telegram."""
+    if not APP_NAME:
+        return
+    seen = 0
+    changed = 0
+    for path in WORDMARK_FILES:
+        if not os.path.exists(path):
+            continue
+        seen += 1
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        if HEADER_LOGO_SPAN not in text:
+            log("Название вместо логотипа: в " + path + " уже так")
+            continue
+        _save(path, text.replace(HEADER_LOGO_SPAN, "", 1))
+        log("Название вместо логотипа: " + path + " — картинка убрана")
+        changed += 1
+    if not seen:
+        log("WARN: не нашёл DialogsActivity/IntroActivity — название останется логотипом")
+    elif not changed:
+        log("Название вместо логотипа: менять нечего")
+
+
 def patch_internal_links():
     """Ссылки t.me открываются внутри приложения, а не в браузере."""
     insert_after(BROWSER_PATH, HOST_ANCHOR, TME_BLOCK, "Ссылки t.me")
@@ -678,13 +723,18 @@ def patch_internal_links():
         return
     with open(MESSAGES_PATH, "r", encoding="utf-8", errors="replace") as f:
         text = f.read()
-    if LINK_PREFIX_OLD in text:
-        _save(MESSAGES_PATH, text.replace(LINK_PREFIX_OLD, LINK_PREFIX_NEW, 1))
-        log("Префикс ссылок: t.me")
-    elif LINK_PREFIX_NEW.strip() in text:
-        log("Префикс ссылок: уже t.me")
-    else:
-        log("WARN: не нашёл присвоение linkPrefix — префикс ссылок не изменён")
+    changed = 0
+    for old, new in ((LINK_PREFIX_OLD, LINK_PREFIX_NEW), (CONFIG_PREFIX_OLD, CONFIG_PREFIX_NEW)):
+        if old in text:
+            text = text.replace(old, new, 1)
+            changed += 1
+        elif new.strip().splitlines()[-1] in text:
+            pass          # уже пропатчено
+        else:
+            log("WARN: не нашёл присвоение linkPrefix: " + old.strip())
+    if changed:
+        _save(MESSAGES_PATH, text)
+    log("Префикс ссылок: t.me (правок: " + str(changed) + ")")
 
 
 def patch_proxy():
@@ -719,6 +769,7 @@ def patch_proxy():
 def main():
     log(f"=== Privatka patcher: APP_NAME={APP_NAME!r} APPLICATION_ID={APPLICATION_ID!r} ===")
     patch_app_name()
+    patch_wordmarks()
     patch_full_rebrand()
     patch_application_id()
     patch_google_services()
